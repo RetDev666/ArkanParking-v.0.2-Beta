@@ -79,13 +79,14 @@ namespace ArkanParking.BL.Services
             _logTimer.Elapsed += OnLogTimerElapsed;
             _logTimer.Start();
 
-            LogParkingState("Таймери ініціалізовано");
+            // Прибираємо логування при ініціалізації
         }
 
         private void OnLogTimerElapsed(object sender, EventArgs e)
         {
             lock (_lock)
             {
+                // Залишаємо тільки це логування
                 LogParkingState("Статус", $"Поточний баланс: {_parkingBalance} у.о. | Вільних місць: {GetFreePlaces()}");
             }
         }
