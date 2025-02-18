@@ -49,26 +49,48 @@ namespace ArkanParking.BL.Services
         }
     }
 
-    private void InitializeTimers()
-    {
-        _withdrawTimer.Interval = Settings.FeePeriodSeconds * 6000;
-        _withdrawTimer.Elapsed += (sender, e) => ChargeVehicles();
-        _withdrawTimer.Start();
-
-        _logTimer.Interval = Settings.LogPeriodSeconds * 1000;
-        _logTimer.Elapsed += OnLogTimerElapsed;
-        _logTimer.Start();
-    }
-
-    private void OnLogTimerElapsed(object sender, EventArgs e)
-    {
-        lock (_lock)
+        private void LogParkingState(string action, string details = "")
         {
-            _logService.Write($"Поточний баланс парковки: {_parkingBalance}");
+            var message = $"[Парковка] {action}";
+            if (!string.IsNullOrEmpty(details))
+            {
+                message += $" | {details}";
+            }
+            _logService.Write(message);
         }
-    }
 
-    public decimal GetBalance() => _parkingBalance;
+        private void LogTransaction(Vehicle vehicle, decimal amount, string type)
+        {
+            var message = $"[Транзакція] {type} | " +
+                         $"Транспорт: {vehicle.Id} | " +
+                         $"Сума: {amount} у.о. | " +
+                         $"Тип: {vehicle.VehicleType} | " +
+                         $"Поточний баланс: {vehicle.Balance}";
+            _logService.Write(message);
+        }
+
+        private void InitializeTimers()
+        {
+            _withdrawTimer.Interval = Settings.FeePeriodSeconds * 6000;
+            _withdrawTimer.Elapsed += (sender, e) => ChargeVehicles();
+            _withdrawTimer.Start();
+
+            _logTimer.Interval = Settings.LogPeriodSeconds * 1000;
+            _logTimer.Elapsed += OnLogTimerElapsed;
+            _logTimer.Start();
+
+            LogParkingState("Таймери ініціалізовано");
+        }
+
+        private void OnLogTimerElapsed(object sender, EventArgs e)
+        {
+            lock (_lock)
+            {
+                LogParkingState("Статус", $"Поточний баланс: {_parkingBalance} у.о. | Вільних місць: {GetFreePlaces()}");
+            }
+        }
+
+        public decimal GetBalance() => _parkingBalance;
 
     public int GetCapacity() => _capacity;
 
@@ -76,101 +98,124 @@ namespace ArkanParking.BL.Services
 
     public ReadOnlyCollection<Vehicle> GetVehicles() => _vehicles.AsReadOnly();
 
-    public void AddVehicle(Vehicle vehicle)
-    {
-        if (vehicle == null) throw new ArgumentNullException(nameof(vehicle));
-
-        lock (_lock)
+        public void AddVehicle(Vehicle vehicle)
         {
-            if (_vehicles.Count >= _capacity)
-            {
-                throw new InvalidOperationException("Парковка заповнена!");
-            }
-            if (_vehicles.Any(v => v.Id == vehicle.Id))
-            {
-                throw new ArgumentException("Транспортний засіб з таким ID вже існує.");
-            }
+            if (vehicle == null) throw new ArgumentNullException(nameof(vehicle));
 
-            _vehicles.Add(vehicle);
-            _logService.Write($"Додано транспортний засіб: {vehicle.Id}");
-        }
-    }
-
-    public void RemoveVehicle(string vehicleId)
-    {
-        lock (_lock)
-        {
-            var vehicle = _vehicles.FirstOrDefault(v => v.Id == vehicleId);
-            if (vehicle == null)
+            lock (_lock)
             {
-                throw new ArgumentException("Транспортний засіб незнайдено!");
-            }
-            if (vehicle.Balance < 0)
-            {
-                throw new InvalidOperationException("Неможливо видалити транспортний засіб з негативним балансом.");
-            }
-            _vehicles.Remove(vehicle);
-            _logService.Write($"Видалено транспортний засіб: {vehicle.Id}");
-        }
-    }
-
-    public void TopUpVehicle(string vehicleId, decimal amount)
-    {
-        if (amount <= 0)
-        {
-            throw new ArgumentException("Сума поповнення повинна бути позитивною.");
-        }
-
-        lock (_lock)
-        {
-            var vehicle = _vehicles.FirstOrDefault(v => v.Id == vehicleId);
-            if (vehicle == null)
-            {
-                throw new ArgumentException("Транспортний засіб незнайдено!");
-            }
-            vehicle.AddBalance(amount);
-            _logService.Write($"Поповнено баланс {vehicle.Id} на {amount} у.о.");
-        }
-    }
-
-    public void ChargeVehicles()
-    {
-        lock (_lock)
-        {
-            foreach (var vehicle in _vehicles)
-            {
-                decimal fee = Settings.GetFee(vehicle.VehicleType);
-                decimal totalCharge;
-
-                if (vehicle.Balance >= fee)
+                if (_vehicles.Count >= _capacity)
                 {
-                    vehicle.DeductBalance(fee);
-                    _parkingBalance += fee;
-                    totalCharge = fee;
+                    LogParkingState("Помилка додавання", $"Транспорт {vehicle.Id} | Причина: Парковка заповнена");
+                    throw new InvalidOperationException("Парковка заповнена!");
                 }
-                else
+                if (_vehicles.Any(v => v.Id == vehicle.Id))
                 {
-                    decimal deficit = fee - vehicle.Balance;
-                    decimal penalty = deficit * Settings.PenaltyCoefficient;
-                    vehicle.DeductBalance(fee + penalty);
-                    _parkingBalance += fee + penalty;
-                    totalCharge = fee + penalty;
+                    LogParkingState("Помилка додавання", $"Транспорт {vehicle.Id} | Причина: Дублікат ID");
+                    throw new ArgumentException("Транспортний засіб з таким ID вже існує.");
                 }
 
-                var transaction = new TransactionInfo
-                {
-                    VehicleId = vehicle.Id,
-                    TransactionDate = DateTime.Now,
-                    Sum = totalCharge,
-                    VehicleType = vehicle.VehicleType
-                };
-
-                _transactions.Add(transaction);
+                _vehicles.Add(vehicle);
+                LogParkingState("Додано транспорт",
+                    $"ID: {vehicle.Id} | Тип: {vehicle.VehicleType} | Баланс: {vehicle.Balance}");
             }
         }
-    }
 
-    public TransactionInfo[] GetLastParkingTransactions()
+        public void RemoveVehicle(string vehicleId)
+        {
+            lock (_lock)
+            {
+                var vehicle = _vehicles.FirstOrDefault(v => v.Id == vehicleId);
+                if (vehicle == null)
+                {
+                    LogParkingState("Помилка видалення", $"Транспорт {vehicleId} | Причина: Не знайдено");
+                    throw new ArgumentException("Транспортний засіб незнайдено!");
+                }
+                if (vehicle.Balance < 0)
+                {
+                    LogParkingState("Помилка видалення",
+                        $"Транспорт {vehicleId} | Причина: Негативний баланс ({vehicle.Balance})");
+                    throw new InvalidOperationException("Неможливо видалити транспортний засіб з негативним балансом.");
+                }
+                _vehicles.Remove(vehicle);
+                LogParkingState("Видалено транспорт",
+                    $"ID: {vehicle.Id} | Тип: {vehicle.VehicleType} | Фінальний баланс: {vehicle.Balance}");
+            }
+        }
+
+
+        public void TopUpVehicle(string vehicleId, decimal amount)
+        {
+            if (amount <= 0)
+            {
+                LogParkingState("Помилка поповнення", $"Транспорт {vehicleId} | Причина: Некоректна сума ({amount})");
+                throw new ArgumentException("Сума поповнення повинна бути позитивною.");
+            }
+
+            lock (_lock)
+            {
+                var vehicle = _vehicles.FirstOrDefault(v => v.Id == vehicleId);
+                if (vehicle == null)
+                {
+                    LogParkingState("Помилка поповнення", $"Транспорт {vehicleId} | Причина: Не знайдено");
+                    throw new ArgumentException("Транспортний засіб незнайдено!");
+                }
+
+                decimal oldBalance = vehicle.Balance;
+                vehicle.AddBalance(amount);
+                LogTransaction(vehicle, amount, "Поповнення");
+                LogParkingState("Баланс оновлено",
+                    $"ID: {vehicle.Id} | Було: {oldBalance} | Поповнення: +{amount} | Стало: {vehicle.Balance}");
+            }
+        }
+
+        public void ChargeVehicles()
+        {
+            lock (_lock)
+            {
+                LogParkingState("Початок стягнення оплати", $"Кількість транспорту: {_vehicles.Count}");
+
+                foreach (var vehicle in _vehicles)
+                {
+                    decimal fee = Settings.GetFee(vehicle.VehicleType);
+                    decimal totalCharge;
+                    string chargeType;
+
+                    if (vehicle.Balance >= fee)
+                    {
+                        vehicle.DeductBalance(fee);
+                        _parkingBalance += fee;
+                        totalCharge = fee;
+                        chargeType = "Стандартна оплата";
+                    }
+                    else
+                    {
+                        decimal deficit = fee - vehicle.Balance;
+                        decimal penalty = deficit * Settings.PenaltyCoefficient;
+                        vehicle.DeductBalance(fee + penalty);
+                        _parkingBalance += fee + penalty;
+                        totalCharge = fee + penalty;
+                        chargeType = "Оплата зі штрафом";
+                    }
+
+                    var transaction = new TransactionInfo
+                    {
+                        VehicleId = vehicle.Id,
+                        TransactionDate = DateTime.Now,
+                        Sum = totalCharge,
+                        VehicleType = vehicle.VehicleType
+                    };
+
+                    _transactions.Add(transaction);
+                    LogTransaction(vehicle, totalCharge, chargeType);
+                }
+
+                LogParkingState("Завершення стягнення оплати",
+                    $"Оброблено транспорту: {_vehicles.Count} | Новий баланс парковки: {_parkingBalance}");
+            }
+        }
+
+        public TransactionInfo[] GetLastParkingTransactions()
     {
         lock (_lock)
         {

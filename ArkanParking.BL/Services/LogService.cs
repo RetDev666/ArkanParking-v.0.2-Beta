@@ -14,6 +14,7 @@ namespace ArkanParking.BL.Services;
 public class LogService : ILogService
 {
     public string LogPath { get; }
+    private readonly object _lockObject = new object();
 
     public LogService(string logFilePath)
     {
@@ -22,10 +23,9 @@ public class LogService : ILogService
 
     public void Write(string logMessage)
     {
-        using (var writer = new StreamWriter(LogPath, true))
+        lock (_lockObject)
         {
-            writer.WriteLine($"{DateTime.Now}: {logMessage}");
-            writer.Flush();
+            File.AppendAllText(LogPath, $"{DateTime.Now}: {logMessage}{Environment.NewLine}");
         }
     }
 
@@ -35,19 +35,19 @@ public class LogService : ILogService
         {
             throw new InvalidOperationException("Лог-файл не знайдено");
         }
-            
-        using (var reader = new StreamReader(LogPath))
+
+        lock (_lockObject)
         {
-            return reader.ReadToEnd();
+            return File.ReadAllText(LogPath);
         }
     }
 
     public void LogTransaction(TransactionInfo transaction)
     {
         var logMessage = $"Транзакція: VehicleId={transaction.VehicleId}, " +
-                         $"Сума: {transaction.Sum}, " +
-                         $"Тип: {transaction.VehicleType}, " +
-                         $"Дата: {transaction.TransactionDate}";
+                       $"Сума: {transaction.Sum}, " +
+                       $"Тип: {transaction.VehicleType}, " +
+                       $"Дата: {transaction.TransactionDate}";
         Write(logMessage);
     }
 
